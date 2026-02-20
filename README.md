@@ -22,7 +22,20 @@ Copy-Item .\config.example.json .\config.json
 if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\config.json } else { Start-Process .\config.json }
 ```
 
-推荐用环境变量保存密码（避免写入明文）：
+`config.json` 里先填这几个核心参数（其余参数先保持默认）：
+
+- `username`：学号/工号（纯数字或账号本体，不要手动加 `@cmcc`）
+- `password`：校园网认证密码
+- `operator`：运营商，必须是 `中国移动` / `中国电信` / `中国联通` 之一
+- `domainValue`：一般留空；仅当你明确要手动指定线路时填写 `@cmcc` / `@ctcc` / `@cucc`
+- `passwordEnvVar`：密码环境变量名，默认 `CAMPUS_PASSWORD`
+
+参数关系（重要）：
+- 常规推荐：填 `username` + `password` + `operator`，`domainValue` 留空
+- 若填写了 `domainValue`，会优先使用它，不再依赖 `operator` 映射
+- 若设置了环境变量（`passwordEnvVar` 对应有值），会覆盖 `config.json` 里的 `password`
+
+推荐用环境变量保存密码（避免写入明文，建议用于长期使用）：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("CAMPUS_PASSWORD", "你的密码", "User")
@@ -70,13 +83,6 @@ if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\confi
 - 现改为检查校园网状态页 `statusUrl`（更严格，避免误判）
 - 命中 `srun_portal_success` 后，会联合页面关键字和 `rad_user_info` 状态判定，降低误判为未在线的概率
 - `onlineCheckTimeoutMs` 可调检测超时
-
-`operator` 必填，支持：
-- `中国移动`
-- `中国电信`
-- `中国联通`
-
-脚本会自动映射线路值（`@cmcc/@ctcc/@cucc`），`username` 请填纯学号/工号，`operatorSuffix` 留空即可。
 
 调试建议：
 - 将 `headless` 改为 `false`，可看到浏览器实际操作过程
