@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Runtime logs and artifacts
+logs/
+*.log
+*.tmp
+
+# Local sensitive config
+config.json
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
