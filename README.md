@@ -10,7 +10,8 @@
 在 PowerShell 里运行：
 
 ```powershell
-cd C:\Users\admin\campus-autologin
+# 先进入你实际下载/解压后的项目目录
+Set-Location "你的项目目录\campus-autologin"
 powershell -ExecutionPolicy Bypass -File .\run-campus-login.ps1 -Setup
 ```
 
@@ -81,7 +82,7 @@ if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\confi
 - 将 `headless` 改为 `false`，可看到浏览器实际操作过程
 - `saveArtifacts` 建议保持 `true`，失败会保存截图和页面快照
 - `browserChannel` 默认 `msedge`，若启动失败会自动回退到 Playwright 默认 Chromium
-- 日志默认在 `C:\Users\admin\campus-autologin\logs`
+- 日志默认在当前项目目录下的 `.\logs`
 - 默认只记录脱敏日志；`logPortalResponseBody: true` 时才会记录脱敏后的响应体
 - `logMaxSizeMB` 控制单个日志文件上限（默认 5MB），超过会自动切分
 - `logMaxFiles` 控制最多保留的日志文件数量（默认 30），超出会自动删除最旧日志
