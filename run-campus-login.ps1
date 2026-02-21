@@ -7,10 +7,14 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
 
 if ($Setup) {
+  Write-Host "== Setup Mode =="
+  Write-Host "Installing dependencies only, authentication will not run."
   if (-not (Test-Path "$scriptDir\package.json")) {
     npm init -y | Out-Null
   }
   npm install playwright --silent
+  Write-Host "[ OK ] Setup completed."
+  exit 0
 }
 
 $configPath = "$scriptDir\config.json"
@@ -18,7 +22,8 @@ if (-not (Test-Path $configPath)) {
   throw "config.json not found. Copy config.example.json to config.json first."
 }
 
-$cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+# Force UTF-8 read to avoid mojibake on Windows PowerShell 5.1 when config.json contains Chinese text.
+$cfg = Get-Content $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
 function Write-Stage {
   param([string]$Message)

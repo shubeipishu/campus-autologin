@@ -15,6 +15,10 @@ Set-Location "你的项目目录\campus-autologin"
 powershell -ExecutionPolicy Bypass -File .\run-campus-login.ps1 -Setup
 ```
 
+说明：
+- `-Setup` 只安装依赖（`npm install playwright`），不会执行认证流程
+- 首次执行 `-Setup` 时不要求 `config.json` 存在
+
 ## 2) 配置账号密码
 
 ```powershell
@@ -29,6 +33,10 @@ if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\confi
 - `operator`：运营商，必须是 `中国移动` / `中国电信` / `中国联通` 之一
 - `domainValue`：一般留空；仅当你明确要手动指定线路时填写 `@cmcc` / `@ctcc` / `@cucc`
 - `passwordEnvVar`：密码环境变量名，默认 `CAMPUS_PASSWORD`
+
+编码建议：
+- 用系统记事本（`notepad.exe`）或 VS Code 以 UTF-8 保存 `config.json`
+- 脚本按 UTF-8 读取配置，可避免中文参数（如 `operator`）乱码导致识别失败
 
 参数关系（重要）：
 - 常规推荐：填 `username` + `password` + `operator`，`domainValue` 留空
