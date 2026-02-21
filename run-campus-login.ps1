@@ -64,7 +64,49 @@ function Get-WlanInfo {
   }
 }
 
+function Get-WiredNetworkInfo {
+  param(
+    [string]$IpPrefix = '',
+    [string]$GatewayPrefix = ''
+  )
+  $items = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object {
+    $_.NetAdapter -and
+    $_.NetAdapter.Status -eq 'Up' -and
+    $_.NetAdapter.HardwareInterface -eq $true -and
+    $_.NetAdapter.MediaType -eq '802.3' -and
+    $_.IPv4Address
+  }
+  foreach ($it in $items) {
+    foreach ($addr in @($it.IPv4Address)) {
+      $ip = [string]$addr.IPAddress
+      if (-not $ip) { continue }
+      if ($IpPrefix -and -not $ip.StartsWith($IpPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+      $gw = ''
+      if ($it.IPv4DefaultGateway -and $it.IPv4DefaultGateway.NextHop) {
+        $gw = [string]$it.IPv4DefaultGateway.NextHop
+      }
+      if ($GatewayPrefix -and $gw -and -not $gw.StartsWith($GatewayPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+      [PSCustomObject]@{
+        AdapterName = [string]$it.InterfaceAlias
+        IP = $ip
+        Gateway = $gw
+      }
+      return
+    }
+  }
+  return $null
+}
+
 if ($null -eq $cfg.enforceWifiSsidCheck -or $cfg.enforceWifiSsidCheck -eq $true) {
+  $allowWiredBypass = $true
+  if ($null -ne $cfg.allowWiredBypassWifiCheck) {
+    $allowWiredBypass = [bool]$cfg.allowWiredBypassWifiCheck
+  }
+  $ipPrefix = ''
+  if ($cfg.requireIpPrefix) { $ipPrefix = [string]$cfg.requireIpPrefix }
+  $gwPrefix = ''
+  if ($cfg.requireGatewayPrefix) { $gwPrefix = [string]$cfg.requireGatewayPrefix }
+
   $prefixes = @()
   if ($cfg.wifiSsidPrefixes) {
     $prefixes = @($cfg.wifiSsidPrefixes)
@@ -88,8 +130,12 @@ if ($null -eq $cfg.enforceWifiSsidCheck -or $cfg.enforceWifiSsidCheck -eq $true)
   $lastStateMsg = ''
   $lastReport = $start.AddSeconds(-30)
   $ok = $false
-  Write-Stage "Wi-Fi Readiness Check"
-  Write-Info "Waiting for allowed SSID (max ${waitMaxSec}s), prefixes: $($prefixes -join ', ')"
+  Write-Stage "Network Readiness Check"
+  if ($allowWiredBypass) {
+    Write-Info "Waiting for allowed SSID or wired network (max ${waitMaxSec}s), SSID prefixes: $($prefixes -join ', ')"
+  } else {
+    Write-Info "Waiting for allowed SSID (max ${waitMaxSec}s), prefixes: $($prefixes -join ', ')"
+  }
   while ((Get-Date) -lt $deadline) {
     $wlan = Get-WlanInfo
     $elapsedSec = [int]((Get-Date) - $start).TotalSeconds
@@ -118,15 +164,31 @@ if ($null -eq $cfg.enforceWifiSsidCheck -or $cfg.enforceWifiSsidCheck -eq $true)
         $lastReport = Get-Date
       }
     }
+    if ($allowWiredBypass) {
+      $wired = Get-WiredNetworkInfo -IpPrefix $ipPrefix -GatewayPrefix $gwPrefix
+      if ($wired) {
+        Write-Ok "Wired check passed: adapter='$($wired.AdapterName)', ip=$($wired.IP), gateway=$($wired.Gateway)"
+        $ok = $true
+        break
+      }
+    }
     Start-Sleep -Seconds $waitIntervalSec
   }
   if (-not $ok) {
     if ($lastSsid) {
+      if ($allowWiredBypass) {
+        throw "Network wait timeout($waitMaxSec s). Last SSID '$lastSsid' does not match allowed prefixes, and wired network is not ready."
+      }
       throw "Wi-Fi SSID wait timeout($waitMaxSec s). Last SSID '$lastSsid' does not match allowed prefixes: $($prefixes -join ', ')"
+    }
+    if ($allowWiredBypass) {
+      throw "Network wait timeout($waitMaxSec s). Wi-Fi SSID not ready and wired network is not ready."
     }
     throw "Wi-Fi SSID wait timeout($waitMaxSec s). Wi-Fi interface/SSID not ready."
   }
-  Write-Ok "Wi-Fi check passed: SSID '$lastSsid'"
+  if ($lastSsid) {
+    Write-Ok "Wi-Fi check passed: SSID '$lastSsid'"
+  }
 }
 
 Write-Stage "Online Status Check"

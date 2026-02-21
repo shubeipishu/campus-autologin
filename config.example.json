@@ -9,6 +9,7 @@
     "http://www.msftconnecttest.com/redirect"
   ],
   "enforceWifiSsidCheck": true,
+  "allowWiredBypassWifiCheck": true,
   "wifiSsidPrefixes": [
     "xju_"
   ],

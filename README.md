@@ -79,8 +79,9 @@ if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\confi
 
 执行前 Wi-Fi 与 DHCP：
 - `enforceWifiSsidCheck: true` 时，先检查当前 Wi-Fi SSID
+- `allowWiredBypassWifiCheck: true`（默认）时，若有线网卡已拿到合规 IPv4（匹配 `requireIpPrefix`，并可选匹配 `requireGatewayPrefix`），即使 Wi-Fi 不匹配也会继续
 - `wifiSsidPrefixes` 允许的 SSID 前缀列表（如 `xju_`）
-- `wifiWaitMaxSec` / `wifiWaitIntervalSec` 控制 Wi-Fi 轮询等待时长（默认最多轮询 120 秒）；即使当前连到其他 Wi-Fi 也会持续等待，便于开机后手动切换
+- `wifiWaitMaxSec` / `wifiWaitIntervalSec` 控制网络轮询等待时长（默认最多轮询 120 秒）；即使当前连到其他 Wi-Fi 也会持续等待，便于开机后手动切换，或等待有线网络就绪
 - 脚本会在 DHCP 刷新前先调用 `login.js --check-online-only` 进行严格在线检测（与主流程同一套判定）；若无需认证会直接退出
 - `dhcpRefreshBeforeAuth: true` 时，登录前执行 `ipconfig /release` + `ipconfig /renew`
 - `dhcpRefreshPauseSec` 控制 release 与 renew 之间间隔
