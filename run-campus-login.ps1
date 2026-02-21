@@ -64,44 +64,65 @@ function Get-WlanInfo {
   }
 }
 
-function Get-WiredNetworkInfo {
+function Get-MetricValue {
+  param($Value)
+  if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+    return 9999
+  }
+  return [int]$Value
+}
+
+function Get-PrimaryAccessInterface {
   param(
-    [string]$IpPrefix = '',
     [string]$GatewayPrefix = ''
   )
-  $items = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object {
-    $_.NetAdapter -and
-    $_.NetAdapter.Status -eq 'Up' -and
-    $_.NetAdapter.HardwareInterface -eq $true -and
-    $_.NetAdapter.MediaType -eq '802.3' -and
-    $_.IPv4Address
-  }
-  foreach ($it in $items) {
-    foreach ($addr in @($it.IPv4Address)) {
-      $ip = [string]$addr.IPAddress
-      if (-not $ip) { continue }
-      if ($IpPrefix -and -not $ip.StartsWith($IpPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-      $gw = ''
-      if ($it.IPv4DefaultGateway -and $it.IPv4DefaultGateway.NextHop) {
-        $gw = [string]$it.IPv4DefaultGateway.NextHop
-      }
-      if ($GatewayPrefix -and $gw -and -not $gw.StartsWith($GatewayPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
-      [PSCustomObject]@{
-        AdapterName = [string]$it.InterfaceAlias
-        IP = $ip
-        Gateway = $gw
-      }
-      return
+  $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+    Sort-Object `
+      @{ Expression = { (Get-MetricValue $_.RouteMetric) + (Get-MetricValue $_.InterfaceMetric) } }, `
+      RouteMetric, InterfaceMetric
+  if (-not $routes) { return $null }
+
+  $ipConfs = Get-NetIPConfiguration -ErrorAction SilentlyContinue
+  foreach ($r in $routes) {
+    $gw = [string]$r.NextHop
+    if ($GatewayPrefix -and -not $gw.StartsWith($GatewayPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      continue
+    }
+    $it = $ipConfs | Where-Object { $_.InterfaceIndex -eq $r.InterfaceIndex } | Select-Object -First 1
+    if (-not $it -or -not $it.NetAdapter) { continue }
+    if ($it.NetAdapter.Status -ne 'Up' -or $it.NetAdapter.HardwareInterface -ne $true) { continue }
+
+    $ips = @($it.IPv4Address | ForEach-Object { [string]$_.IPAddress }) | Where-Object { $_ }
+    if ($ips.Count -eq 0) { continue }
+
+    $rawMedium = ''
+    if ($it.NetAdapter.NdisPhysicalMedium -ne $null) {
+      $rawMedium = [string]$it.NetAdapter.NdisPhysicalMedium
+    } elseif ($it.NetAdapter.MediaType) {
+      $rawMedium = [string]$it.NetAdapter.MediaType
+    }
+    $accessType = 'Unknown'
+    if ($rawMedium -eq '9' -or $rawMedium -eq 'Native802_11' -or $rawMedium -match '802.?11') {
+      $accessType = 'WLAN'
+    } elseif ($rawMedium -eq '14' -or $rawMedium -eq '802.3' -or $rawMedium -match '802\.3') {
+      $accessType = 'Wired'
+    }
+
+    return [PSCustomObject]@{
+      AdapterName = [string]$it.InterfaceAlias
+      InterfaceIndex = [int]$it.InterfaceIndex
+      AccessType = $accessType
+      Medium = $rawMedium
+      IPv4List = $ips
+      Gateway = $gw
+      RouteMetric = (Get-MetricValue $r.RouteMetric)
+      InterfaceMetric = (Get-MetricValue $r.InterfaceMetric)
     }
   }
   return $null
 }
 
 if ($null -eq $cfg.enforceWifiSsidCheck -or $cfg.enforceWifiSsidCheck -eq $true) {
-  $allowWiredBypass = $true
-  if ($null -ne $cfg.allowWiredBypassWifiCheck) {
-    $allowWiredBypass = [bool]$cfg.allowWiredBypassWifiCheck
-  }
   $ipPrefix = ''
   if ($cfg.requireIpPrefix) { $ipPrefix = [string]$cfg.requireIpPrefix }
   $gwPrefix = ''
@@ -127,67 +148,84 @@ if ($null -eq $cfg.enforceWifiSsidCheck -or $cfg.enforceWifiSsidCheck -eq $true)
   $start = Get-Date
   $deadline = $start.AddSeconds($waitMaxSec)
   $lastSsid = ''
+  $lastAccessMsg = ''
   $lastStateMsg = ''
   $lastReport = $start.AddSeconds(-30)
   $ok = $false
   Write-Stage "Network Readiness Check"
-  if ($allowWiredBypass) {
-    Write-Info "Waiting for allowed SSID or wired network (max ${waitMaxSec}s), SSID prefixes: $($prefixes -join ', ')"
-  } else {
-    Write-Info "Waiting for allowed SSID (max ${waitMaxSec}s), prefixes: $($prefixes -join ', ')"
-  }
+  Write-Info "Rules: WLAN requires allowed SSID; wired requires IP prefix '$ipPrefix'. Max wait ${waitMaxSec}s."
   while ((Get-Date) -lt $deadline) {
-    $wlan = Get-WlanInfo
     $elapsedSec = [int]((Get-Date) - $start).TotalSeconds
-    if ($wlan -and $wlan.SSID) {
-      $lastSsid = $wlan.SSID
-      $matched = $false
-      foreach ($p in $prefixes) {
-        if ($wlan.SSID.StartsWith([string]$p, [System.StringComparison]::OrdinalIgnoreCase)) {
-          $matched = $true
+    $access = Get-PrimaryAccessInterface -GatewayPrefix $gwPrefix
+    if ($access) {
+      $lastAccessMsg = "adapter='$($access.AdapterName)' type=$($access.AccessType) ip=[$(($access.IPv4List -join ', '))] gw=$($access.Gateway)"
+      if ($access.AccessType -eq 'WLAN') {
+        $wlan = Get-WlanInfo
+        $ssid = ''
+        if ($wlan -and $wlan.SSID) { $ssid = [string]$wlan.SSID }
+        if ($ssid) { $lastSsid = $ssid }
+        $matched = $false
+        if ($ssid) {
+          foreach ($p in $prefixes) {
+            if ($ssid.StartsWith([string]$p, [System.StringComparison]::OrdinalIgnoreCase)) {
+              $matched = $true
+              $ok = $true
+              break
+            }
+          }
+        }
+        $stateMsg = "Default route via WLAN: $lastAccessMsg ssid='$ssid' matched=$matched elapsed=${elapsedSec}s/${waitMaxSec}s"
+        if ($stateMsg -ne $lastStateMsg -or ((Get-Date) - $lastReport).TotalSeconds -ge 10) {
+          Write-Info $stateMsg
+          $lastStateMsg = $stateMsg
+          $lastReport = Get-Date
+        }
+        if ($ok) {
+          Write-Ok "WLAN check passed: SSID '$ssid'"
+          break
+        }
+      } elseif ($access.AccessType -eq 'Wired') {
+        $ipOk = $false
+        foreach ($ip in $access.IPv4List) {
+          if (-not $ipPrefix -or $ip.StartsWith($ipPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $ipOk = $true
+            break
+          }
+        }
+        $stateMsg = "Default route via wired: $lastAccessMsg ipOk=$ipOk elapsed=${elapsedSec}s/${waitMaxSec}s"
+        if ($stateMsg -ne $lastStateMsg -or ((Get-Date) - $lastReport).TotalSeconds -ge 10) {
+          Write-Info $stateMsg
+          $lastStateMsg = $stateMsg
+          $lastReport = Get-Date
+        }
+        if ($ipOk) {
+          Write-Ok "Wired check passed: adapter '$($access.AdapterName)'"
           $ok = $true
           break
         }
+      } else {
+        $stateMsg = "Default route on unsupported medium: $lastAccessMsg elapsed=${elapsedSec}s/${waitMaxSec}s"
+        if ($stateMsg -ne $lastStateMsg -or ((Get-Date) - $lastReport).TotalSeconds -ge 10) {
+          Write-Info $stateMsg
+          $lastStateMsg = $stateMsg
+          $lastReport = Get-Date
+        }
       }
-      $stateMsg = "SSID='$($wlan.SSID)' matched=$matched elapsed=${elapsedSec}s/${waitMaxSec}s"
-      if ($stateMsg -ne $lastStateMsg -or ((Get-Date) - $lastReport).TotalSeconds -ge 10) {
-        Write-Info $stateMsg
-        $lastStateMsg = $stateMsg
-        $lastReport = Get-Date
-      }
-      if ($ok) { break }
     } else {
-      $stateMsg = "Wi-Fi not connected yet, elapsed=${elapsedSec}s/${waitMaxSec}s"
+      $stateMsg = "No physical default route matched yet, elapsed=${elapsedSec}s/${waitMaxSec}s"
       if ($stateMsg -ne $lastStateMsg -or ((Get-Date) - $lastReport).TotalSeconds -ge 10) {
         Write-Info $stateMsg
         $lastStateMsg = $stateMsg
         $lastReport = Get-Date
-      }
-    }
-    if ($allowWiredBypass) {
-      $wired = Get-WiredNetworkInfo -IpPrefix $ipPrefix -GatewayPrefix $gwPrefix
-      if ($wired) {
-        Write-Ok "Wired check passed: adapter='$($wired.AdapterName)', ip=$($wired.IP), gateway=$($wired.Gateway)"
-        $ok = $true
-        break
       }
     }
     Start-Sleep -Seconds $waitIntervalSec
   }
   if (-not $ok) {
-    if ($lastSsid) {
-      if ($allowWiredBypass) {
-        throw "Network wait timeout($waitMaxSec s). Last SSID '$lastSsid' does not match allowed prefixes, and wired network is not ready."
-      }
-      throw "Wi-Fi SSID wait timeout($waitMaxSec s). Last SSID '$lastSsid' does not match allowed prefixes: $($prefixes -join ', ')"
+    if ($lastAccessMsg) {
+      throw "Network wait timeout($waitMaxSec s). Last route info: $lastAccessMsg"
     }
-    if ($allowWiredBypass) {
-      throw "Network wait timeout($waitMaxSec s). Wi-Fi SSID not ready and wired network is not ready."
-    }
-    throw "Wi-Fi SSID wait timeout($waitMaxSec s). Wi-Fi interface/SSID not ready."
-  }
-  if ($lastSsid) {
-    Write-Ok "Wi-Fi check passed: SSID '$lastSsid'"
+    throw "Network wait timeout($waitMaxSec s). No physical default route available."
   }
 }
 
@@ -202,16 +240,18 @@ Write-Info "Not online yet, continue authentication flow."
 
 if ($cfg.dhcpRefreshBeforeAuth -eq $true) {
   Write-Stage "DHCP Refresh"
-  $wlan = Get-WlanInfo
+  $gwPrefix = ''
+  if ($cfg.requireGatewayPrefix) { $gwPrefix = [string]$cfg.requireGatewayPrefix }
+  $access = Get-PrimaryAccessInterface -GatewayPrefix $gwPrefix
   $pauseSec = 2
   if ($cfg.dhcpRefreshPauseSec) {
     $pauseSec = [int]$cfg.dhcpRefreshPauseSec
   }
-  if ($wlan -and $wlan.Name) {
-    Write-Info "Refreshing DHCP on adapter '$($wlan.Name)' ..."
-    ipconfig /release "$($wlan.Name)" | Out-Null
+  if ($access -and $access.AdapterName) {
+    Write-Info "Refreshing DHCP on adapter '$($access.AdapterName)' ..."
+    ipconfig /release "$($access.AdapterName)" | Out-Null
     Start-Sleep -Seconds $pauseSec
-    ipconfig /renew "$($wlan.Name)" | Out-Null
+    ipconfig /renew "$($access.AdapterName)" | Out-Null
   } else {
     Write-Info "Refreshing DHCP on all adapters ..."
     ipconfig /release | Out-Null
