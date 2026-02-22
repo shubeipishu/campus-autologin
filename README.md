@@ -1,137 +1,164 @@
 # 校园网自动登录脚本（Windows）
 
-## 环境要求
-- Windows 10/11
-- Windows PowerShell 5.1 及以上（推荐 5.1 或 PowerShell 7）
-- Node.js 18 及以上（`login.js` 使用全局 `fetch`）
-- 系统组件：`schtasks`、`wscript`（均为 Windows 自带）
+开机后自动连接校园网认证，无需手动打开浏览器登录。支持 WiFi / 有线自动识别，兼容 Mihomo / Clash 等代理工具的 Fake-IP 模式。
 
-## 1) 初始化依赖
-在 PowerShell 里运行：
+## 工作原理
+
+```
+开机 → 计划任务触发 → VBS 隐藏窗口 → PowerShell 入口
+  │
+  ├── 1. 网卡枚举 & Fake-IP 检测
+  │     扫描所有网卡，识别 198.18.* IP 或 Mihomo/Clash 虚拟网卡
+  │
+  ├── 2. 网络就绪检查
+  │     WiFi → 检查 SSID 是否匹配（如 xju_*）
+  │     有线 → 检查 IP 是否匹配（如 10.*）
+  │
+  └── 3. Node.js 认证
+        rad_user_info API 判断在线状态（已在线直接退出）
+        → 自动发现 Portal URL（DNS 劫持探测）
+        → Playwright 填写账号密码并登录
+        → rad_user_info 确认登录成功
+```
+
+## 环境要求
+
+- Windows 10 / 11
+- Node.js 18+（需要全局 `fetch`）
+- PowerShell 5.1+
+
+## 快速开始
+
+### 1. 安装依赖
 
 ```powershell
-# 先进入你实际下载/解压后的项目目录
 Set-Location "你的项目目录\campus-autologin"
 powershell -ExecutionPolicy Bypass -File .\run-campus-login.ps1 -Setup
 ```
 
-说明：
-- `-Setup` 只安装依赖（`npm install playwright`），不会执行认证流程
-- 首次执行 `-Setup` 时不要求 `config.json` 存在
-
-## 2) 配置账号密码
+### 2. 配置账号
 
 ```powershell
 Copy-Item .\config.example.json .\config.json
-if (Get-Command notepad.exe -ErrorAction SilentlyContinue) { notepad.exe .\config.json } else { Start-Process .\config.json }
+notepad .\config.json
 ```
 
-`config.json` 里先填这几个核心参数（其余参数先保持默认）：
+必填参数：
 
-- `username`：学号/工号（纯数字或账号本体，不要手动加 `@cmcc`）
-- `password`：校园网认证密码
-- `operator`：运营商，必须是 `中国移动` / `中国电信` / `中国联通` 之一
-- `domainValue`：一般留空；仅当你明确要手动指定线路时填写 `@cmcc` / `@ctcc` / `@cucc`
-- `passwordEnvVar`：密码环境变量名，默认 `CAMPUS_PASSWORD`
+| 参数 | 说明 | 示例 |
+|---|---|---|
+| `username` | 学号 / 工号 | `"107556524108"` |
+| `password` | 认证密码 | `"your_password"` |
+| `operator` | 运营商 | `"中国移动"` / `"中国电信"` / `"中国联通"` |
 
-编码建议：
-- 用系统记事本（`notepad.exe`）或 VS Code 以 UTF-8 保存 `config.json`
-- 脚本按 UTF-8 读取配置，可避免中文参数（如 `operator`）乱码导致识别失败
+> **安全建议**：使用环境变量存储密码，避免明文写入配置文件：
+> ```powershell
+> [Environment]::SetEnvironmentVariable("CAMPUS_PASSWORD", "你的密码", "User")
+> ```
+> 然后将 `config.json` 中的 `password` 留空即可。
 
-参数关系（重要）：
-- 常规推荐：填 `username` + `password` + `operator`，`domainValue` 留空
-- 若填写了 `domainValue`，会优先使用它，不再依赖 `operator` 映射
-- 若设置了环境变量（`passwordEnvVar` 对应有值），会覆盖 `config.json` 里的 `password`
-
-推荐用环境变量保存密码（避免写入明文，建议用于长期使用）：
-
-```powershell
-[Environment]::SetEnvironmentVariable("CAMPUS_PASSWORD", "你的密码", "User")
-```
-
-`config.json` 中将 `password` 留空，脚本会优先读取 `passwordEnvVar`（默认 `CAMPUS_PASSWORD`）。
-
-`portalUrl` 与自动探测：
-- 建议开启 `autoDiscoverPortal: true`
-- 脚本会先访问 `detectUrl`（默认 `http://www.msftconnecttest.com/redirect`）
-- 可配置 `detectUrls` 作为多探测地址列表，依次尝试
-- 若被重定向到校园网 `srun_portal_pc`，会直接使用该链接
-- 若未探测到，会回退到 `portalUrl`
-- `startupDelayMs` 可用于开机后先等几秒再探测（避免网卡未就绪）
-- `portalOpenRetries` 用于 portal 页面打开失败时同次重试（如 `ERR_EMPTY_RESPONSE`）
-- 脚本会自动检测本机是否存在 `198.*` IPv4（常见于 Clash Fake-IP）；命中后会只使用校园网 portal 地址进行 refresh/detect/probe，避免外部探测地址超时拖慢流程
-
-认证前网关刷新：
-- `preAuthRefresh: true` 时，登录前先刷新网关页面，减少状态不同步
-- `refreshUrls` 为刷新地址列表（可放 portal 与 detect 链接）
-- `refreshCount` 刷新轮数，`refreshTimeoutMs` 单次超时，`refreshDelayMs` 每次间隔
-
-认证前网络就绪检查：
-- `preflightCheck: true` 开启前置检查
-- `requireIpPrefix` 可要求拿到指定网段 IP（如 `10.`）
-- 自动读取系统默认网关（IPv4）并校验；若存在多网卡（如 Clash Fake-IP `198.18.x.x`），会优先匹配 `requireIpPrefix` 对应的默认路由
-- `requireGatewayPrefix` 可要求默认网关前缀（如 `10.`）
-- `checkGatewayPing` 控制是否 Ping 默认网关
-- `gatewayPingTimeoutMs` 为 Ping 超时
-- `gatewayHost` 用于 DNS 检查（默认从 `portalUrl` 解析）
-- `preflightProbeUrls` 用于连通性探测
-- `preflightWaitMaxMs`/`preflightIntervalMs` 控制等待时长与轮询间隔
-
-执行前 Wi-Fi 与 DHCP：
-- `enforceWifiSsidCheck: true` 时，先做“接入类型就绪检查”（基于物理默认路由接口）
-- 若默认路由接口是 `WLAN`：要求当前 SSID 命中 `wifiSsidPrefixes`（如 `xju_`）
-- 若默认路由接口是 `有线(802.3)`：要求网卡 IPv4 命中 `requireIpPrefix`（如 `10.`）
-- `wifiWaitMaxSec` / `wifiWaitIntervalSec` 控制轮询等待时长（默认最多轮询 120 秒）；开机后可等待用户切换到目标 Wi-Fi，或等待有线 DHCP 就绪
-- 脚本会在 DHCP 刷新前先调用 `login.js --check-online-only` 进行严格在线检测（与主流程同一套判定）；若无需认证会直接退出
-- `dhcpRefreshBeforeAuth: true` 时，登录前执行 `ipconfig /release` + `ipconfig /renew`
-- `dhcpRefreshPauseSec` 控制 release 与 renew 之间间隔
-
-已在线跳过认证：
-- `skipAlreadyOnlineCheck: false` 时，先做外网连通性检测
-- 若判定已联网（认证未过期），脚本直接成功返回，不再重复认证
-- 现改为检查校园网状态页 `statusUrl`（更严格，避免误判）
-- 命中 `srun_portal_success` 后，会联合页面关键字和 `rad_user_info` 状态判定，降低误判为未在线的概率
-- `onlineCheckTimeoutMs` 可调检测超时
-
-调试建议：
-- 将 `headless` 改为 `false`，可看到浏览器实际操作过程
-- `saveArtifacts` 建议保持 `true`，失败会保存截图和页面快照
-- `browserChannel` 默认 `msedge`，若启动失败会自动回退到 Playwright 默认 Chromium
-- 日志默认在当前项目目录下的 `.\logs`
-- 默认只记录脱敏日志；`logPortalResponseBody: true` 时才会记录脱敏后的响应体
-- `logMaxSizeMB` 控制单个日志文件上限（默认 5MB），超过会自动切分
-- `logMaxFiles` 控制最多保留的日志文件数量（默认 30），超出会自动删除最旧日志
-- `disableIpv6Auth: true`（默认）会拦截 IPv6 的认证请求，仅走 IPv4，通常可减少双栈超时带来的额外等待
-- 若历史日志是在旧版本生成，建议手动清理一次 `logs` 目录
-- `resultTimeoutMs` 控制点击登录后等待结果的时长（默认 10000ms）
-- `postClickDelayMs` 控制点击后短暂停顿（默认 300ms）
-
-## 3) 手动测试一次
+### 3. 测试运行
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run-campus-login.ps1
 ```
 
-## 4) 设置登录后自动执行
+### 4. 设置开机自启
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-task.ps1
 ```
 
-## 5) 任务管理
-查看：
+脚本会创建计划任务 `CampusNetAutoLogin`，登录 Windows 时自动后台运行（无窗口）。
+
+### 5. 卸载自启
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall-task.ps1
+```
+
+## 配置参数说明
+
+### 核心参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `username` | - | 学号 / 工号 |
+| `password` | - | 认证密码（环境变量优先） |
+| `operator` | - | `中国移动` / `中国电信` / `中国联通` |
+| `passwordEnvVar` | `"CAMPUS_PASSWORD"` | 密码环境变量名 |
+| `domainValue` | `""` | 手动指定线路（`@cmcc`/`@ctcc`/`@cucc`），留空自动映射 |
+
+### Portal 与自动发现
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `portalUrl` | - | Portal 页面 URL（自动发现失败时使用） |
+| `autoDiscoverPortal` | `true` | 是否通过 DNS 劫持探测 Portal URL |
+| `detectUrls` | `["http://www.msftconnecttest.com/redirect"]` | 自动发现探测地址 |
+| `detectTimeoutMs` | `3000` | 自动发现超时（网关劫持通常 < 1s） |
+
+### 网络检查
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `wifiSsidPrefixes` | `["xju_"]` | 允许的 WiFi SSID 前缀 |
+| `wifiWaitMaxSec` | `120` | 等待网络就绪的最大秒数 |
+| `wifiWaitIntervalSec` | `3` | 网络就绪轮询间隔 |
+
+### 浏览器与重试
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `browserChannel` | `"msedge"` | 浏览器引擎（`msedge` / `chrome` / `chromium`） |
+| `headless` | `true` | 无头模式（调试时设为 `false` 可看到浏览器） |
+| `maxRetries` | `6` | 最大重试次数 |
+| `retryDelayMs` | `20000` | 重试间隔（ms） |
+| `timeoutMs` | `20000` | 页面加载超时 |
+| `resultTimeoutMs` | `4000` | 登录结果等待超时 |
+
+### 日志
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `logDir` | `"./logs"` | 日志目录 |
+| `logMaxSizeMB` | `5` | 单日志文件上限 |
+| `logMaxFiles` | `30` | 最多保留日志文件数 |
+| `saveArtifacts` | `true` | 失败时保存截图和页面快照 |
+
+## 故障排查
+
+查看最新日志：
+
+```powershell
+Get-Content (Get-ChildItem .\logs\campus-login-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName -Tail 30
+```
+
+查看计划任务状态：
+
 ```powershell
 schtasks /Query /TN CampusNetAutoLogin /V /FO LIST
 ```
 
-删除：
-```powershell
-schtasks /Delete /TN CampusNetAutoLogin /F
-```
+常见问题：
 
-## 6) 故障排查
-查看最新日志：
-```powershell
-Get-ChildItem .\logs | Sort-Object LastWriteTime -Descending | Select-Object -First 5 Name,LastWriteTime,Length
-Get-Content (Get-ChildItem .\logs\campus-login-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName -Tail 120
+| 现象 | 排查方向 |
+|---|---|
+| `rad_user_info reports offline` 后登录成功 | 正常流程，说明自动认证生效 |
+| `Auto discover: no gateway hijack` | 网关未劫持探测 URL，使用 `portalUrl` fallback |
+| `Cannot find login button` | Portal 页面结构变化，检查 `portalUrl` 是否正确 |
+| 笔记本电池模式不触发 | 重新运行 `install-task.ps1` 更新电池设置 |
+
+## 文件结构
+
+```
+campus-autologin/
+├── login.js                      # Node.js 认证核心逻辑
+├── run-campus-login.ps1          # PowerShell 入口（网卡检测 + 网络就绪）
+├── run-campus-login-hidden.vbs   # 隐藏窗口启动器
+├── install-task.ps1              # 安装开机自启计划任务
+├── uninstall-task.ps1            # 卸载计划任务
+├── config.json                   # 用户配置（不提交 Git）
+├── config.example.json           # 配置模板
+└── logs/                         # 运行日志
 ```

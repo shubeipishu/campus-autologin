@@ -9,21 +9,35 @@ $action = "`"$wscript`" `"$hiddenLauncher`""
 
 try {
   $null = & schtasks /Query /TN $taskName 2>$null
-} catch {}
+}
+catch {}
 if ($LASTEXITCODE -eq 0) {
   try {
     & schtasks /Delete /TN $taskName /F 2>$null | Out-Null
-  } catch {}
+  }
+  catch {}
 }
 
 try {
   $null = & schtasks /Create /TN $taskName /SC ONLOGON /TR $action /RL LIMITED /F 2>$null
-} catch {}
+}
+catch {}
 try {
   $null = & schtasks /Query /TN $taskName 2>$null
-} catch {}
+}
+catch {}
 if ($LASTEXITCODE -eq 0) {
-  Write-Host "Task installed: $taskName"
+  # Fix battery settings so the task runs on laptops
+  try {
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+      $task.Settings.DisallowStartIfOnBatteries = $false
+      $task.Settings.StopIfGoingOnBatteries = $false
+      $task | Set-ScheduledTask | Out-Null
+    }
+  }
+  catch {}
+  Write-Host "Task installed: $taskName (runs on battery, hidden window)"
   Write-Host "Run now to test: powershell -ExecutionPolicy Bypass -File $scriptDir\run-campus-login.ps1"
   exit 0
 }
@@ -36,7 +50,8 @@ try {
   Set-ItemProperty -Path $runKey -Name $runName -Value $action
   Write-Host "Task Scheduler create failed, fallback to HKCU Run startup entry installed: $runName"
   Write-Host "Startup command: $action"
-} catch {
+}
+catch {
   Write-Host "Failed to install Task Scheduler entry and failed to write HKCU Run fallback."
   Write-Host "Please run this script in an elevated PowerShell window."
   exit 1

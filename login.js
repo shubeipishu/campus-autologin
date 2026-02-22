@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const dns = require('dns').promises;
+
 const { URL } = require('url');
 const { execSync } = require('child_process');
 
@@ -81,7 +81,7 @@ function pruneOldLogs(logDir, maxFiles) {
   for (let i = 0; i < toDelete; i++) {
     try {
       fs.unlinkSync(files[i].full);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -141,7 +141,7 @@ async function firstVisible(page, selectors) {
     if ((await locator.count()) > 0) {
       try {
         if (await locator.isVisible()) return locator;
-      } catch (_) {}
+      } catch (_) { }
     }
   }
   return null;
@@ -182,9 +182,15 @@ function hasFakeIpAddress(ips) {
   return (ips || []).some((ip) => String(ip).startsWith('198.'));
 }
 
-function detectFakeIpModeNow() {
+// FAKE_IP_MODE is now provided by PowerShell via --fake-ip-mode argument.
+function getFakeIpMode() {
+  const arg = process.argv.find(a => a.startsWith('--fake-ip-mode='));
+  if (arg) {
+    return arg.split('=')[1] === 'true';
+  }
   return hasFakeIpAddress(getLocalIpv4List());
 }
+const FAKE_IP_MODE = getFakeIpMode();
 
 function filterUrlsForPortalOnly(cfg, urls, fakeIpMode) {
   const xs = Array.isArray(urls) ? urls : [];
@@ -227,7 +233,7 @@ function parseSrunJsonpPayload(rawBody) {
     const maybeJson = text.slice(first + 1, last);
     try {
       return JSON.parse(maybeJson);
-    } catch (_) {}
+    } catch (_) { }
   }
 
   try {
@@ -315,15 +321,7 @@ function getLocalIpv4List() {
   return ips;
 }
 
-function pickGatewayHost(cfg) {
-  if (cfg.gatewayHost) return cfg.gatewayHost;
-  try {
-    const u = new URL(cfg.portalUrl || 'http://202.201.252.10');
-    return u.hostname;
-  } catch (_) {
-    return '202.201.252.10';
-  }
-}
+
 
 async function probeHttp(url, timeoutMs) {
   const ctrl = new AbortController();
@@ -338,105 +336,25 @@ async function probeHttp(url, timeoutMs) {
   }
 }
 
-function buildStatusUrl(cfg) {
-  if (cfg.statusUrl) return cfg.statusUrl;
-  try {
-    const p = new URL(cfg.portalUrl || 'http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro');
-    const ac = p.searchParams.get('ac_id') || '4';
-    const theme = p.searchParams.get('theme') || 'pro';
-    return `${p.origin}/srun_portal_success?ac_id=${encodeURIComponent(ac)}&theme=${encodeURIComponent(theme)}`;
-  } catch (_) {
-    return 'http://202.201.252.10/srun_portal_success?ac_id=4&theme=pro';
-  }
-}
 
-async function checkAlreadyOnlineByPortal(page, cfg, logger) {
-  if (cfg.skipAlreadyOnlineCheck === true) return false;
-  const statusUrl = buildStatusUrl(cfg);
+
+async function checkAlreadyOnlineByPortal(cfg, logger) {
   const timeoutMs = Number(cfg.onlineCheckTimeoutMs || 5000);
-
   try {
-    await gotoWithRetry(page, statusUrl, timeoutMs, 1, logger, 'online-check');
-    const current = page.url();
-    const pageText = await page.locator('body').innerText().catch(() => '');
-    const hasSuccessText = textContainsAny(pageText, ['已用流量', 'IP 地址', '用户账号', '注销']);
-    const hasOnlineUserInfo = await checkOnlineByRadUserInfo(cfg, timeoutMs, logger);
-    const isSuccessUrl = /srun_portal_success/i.test(current);
-    const isLoginUrl = /srun_portal_pc/i.test(current);
-    logger.log(
-      `Online check(portal): url=${sanitizeUrlForLog(current)} successText=${hasSuccessText} radOnline=${hasOnlineUserInfo}`
-    );
-    // Use rad_user_info as the source of truth to avoid portal-page false positives.
-    if (hasOnlineUserInfo) return true;
-    if (isSuccessUrl && hasSuccessText) {
-      logger.log('Portal page looks online but rad_user_info says offline; continue auth flow.');
+    const isOnline = await checkOnlineByRadUserInfo(cfg, timeoutMs, logger);
+    if (isOnline) {
+      logger.log(`Online check: rad_user_info reports online.`);
+      return true;
     }
-    if (isLoginUrl) return false;
+    logger.log(`Online check: rad_user_info reports offline.`);
     return false;
   } catch (err) {
-    logger.log(`Online check(portal) failed: ${sanitizeMessage(err.message)}`);
+    logger.log(`Online check failed: ${sanitizeMessage(err.message)}`);
     return false;
   }
 }
 
-function getDefaultRoutesFromRoutePrint() {
-  try {
-    const out = execSync('route print -4', { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-    const routes = [];
-    for (const line of out.split(/\r?\n/)) {
-      const m = line.match(
-        /^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s*$/
-      );
-      if (m) {
-        routes.push({
-          gateway: m[1],
-          interfaceIp: m[2],
-          metric: Number(m[3])
-        });
-      }
-    }
-    routes.sort((a, b) => a.metric - b.metric);
-    return routes;
-  } catch (_) {
-    return [];
-  }
-}
-
-function getDefaultGatewayIPv4(preferredIpPrefix = '', preferredGatewayPrefix = '') {
-  const routes = getDefaultRoutesFromRoutePrint();
-  if (routes.length > 0) {
-    const byBoth = routes.find(
-      (r) =>
-        (!preferredIpPrefix || r.interfaceIp.startsWith(preferredIpPrefix)) &&
-        (!preferredGatewayPrefix || r.gateway.startsWith(preferredGatewayPrefix))
-    );
-    if (byBoth) return byBoth.gateway;
-
-    if (preferredIpPrefix) {
-      const byInterface = routes.find((r) => r.interfaceIp.startsWith(preferredIpPrefix));
-      if (byInterface) return byInterface.gateway;
-    }
-
-    if (preferredGatewayPrefix) {
-      const byGateway = routes.find((r) => r.gateway.startsWith(preferredGatewayPrefix));
-      if (byGateway) return byGateway.gateway;
-    }
-
-    return routes[0].gateway;
-  }
-
-  try {
-    const out = execSync(
-      'powershell -NoProfile -Command "$gw=(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix \'0.0.0.0/0\' | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1 -ExpandProperty NextHop); if($gw){$gw}"',
-      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 1200 }
-    )
-      .toString()
-      .trim();
-    if (out) return out;
-  } catch (_) {}
-
-  return '';
-}
+// Default gateway resolution is now fully handled in PowerShell.
 
 async function checkOnlineByRadUserInfo(cfg, timeoutMs, logger) {
   const hosts = getAuthHosts(cfg);
@@ -459,155 +377,111 @@ async function checkOnlineByRadUserInfo(cfg, timeoutMs, logger) {
   return false;
 }
 
-function probePing(host, timeoutMs) {
-  if (!host) return false;
-  const ms = Math.max(500, Number(timeoutMs || 1500));
-  try {
-    execSync(`ping -n 1 -w ${ms} ${host}`, { stdio: ['ignore', 'ignore', 'ignore'] });
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
+
 
 async function preflightNetworkCheck(cfg, logger) {
-  if (cfg.preflightCheck === false) return;
-  const maxWaitMs = Number(cfg.preflightWaitMaxMs || 45000);
-  const intervalMs = Number(cfg.preflightIntervalMs || 3000);
+  // IP segment, Default Gateway and Ping checks are now handled by run-campus-login.ps1.
+  // We only run light HTTP probe to detect actual portal reachability.
   const timeoutMs = Number(cfg.preflightProbeTimeoutMs || 3000);
-  const host = pickGatewayHost(cfg);
-  const requireIpPrefix = String(cfg.requireIpPrefix || '').trim();
-  const requireGatewayPrefix = String(cfg.requireGatewayPrefix || '10.').trim();
-  const checkGatewayPing = cfg.checkGatewayPing !== false;
-  const gatewayPingTimeoutMs = Number(cfg.gatewayPingTimeoutMs || 1500);
   const probeUrlsRaw = Array.isArray(cfg.preflightProbeUrls) && cfg.preflightProbeUrls.length > 0
     ? cfg.preflightProbeUrls
     : [cfg.portalUrl || 'http://202.201.252.10', 'http://www.msftconnecttest.com/redirect'];
   const defaultProbeUrl = cfg.portalUrl || 'http://202.201.252.10';
 
-  const start = Date.now();
-  while (Date.now() - start <= maxWaitMs) {
-    logger.log('Preflight probing ...');
-    const ips = getLocalIpv4List();
-    const fakeIpMode = hasFakeIpAddress(ips);
-    const ipOk = requireIpPrefix ? ips.some((ip) => ip.startsWith(requireIpPrefix)) : ips.length > 0;
-    const defaultGateway = getDefaultGatewayIPv4(requireIpPrefix, requireGatewayPrefix);
-    const gwOk = defaultGateway
-      ? (requireGatewayPrefix ? defaultGateway.startsWith(requireGatewayPrefix) : true)
-      : false;
-    const gwPingOk = checkGatewayPing ? probePing(defaultGateway, gatewayPingTimeoutMs) : true;
+  const probeUrls = filterUrlsForPortalOnly(cfg, probeUrlsRaw, FAKE_IP_MODE);
+  const finalProbeUrls = probeUrls.length > 0 ? probeUrls : [defaultProbeUrl];
 
-    let dnsOk = false;
-    try {
-      await dns.lookup(host);
-      dnsOk = true;
-    } catch (_) {}
-
-    const probeUrls = filterUrlsForPortalOnly(cfg, probeUrlsRaw, fakeIpMode);
-    const finalProbeUrls = probeUrls.length > 0 ? probeUrls : [defaultProbeUrl];
-    let httpOk = false;
-    for (const u of finalProbeUrls) {
-      const r = await probeHttp(u, timeoutMs);
-      if (r.ok) {
-        httpOk = true;
-        break;
-      }
+  let httpOk = false;
+  for (const u of finalProbeUrls) {
+    const r = await probeHttp(u, timeoutMs);
+    if (r.ok) {
+      httpOk = true;
+      break;
     }
-
-    logger.log(
-      `Preflight: fakeIpMode=${fakeIpMode} ipOk=${ipOk} ips=[${ips.join(', ')}] gateway=${defaultGateway || 'N/A'} gwOk=${gwOk} gwPingOk=${gwPingOk} dnsOk=${dnsOk} httpOk=${httpOk}`
-    );
-    if (ipOk && gwOk && gwPingOk && dnsOk && httpOk) return;
-    await sleep(intervalMs);
   }
 
-  throw new Error('Preflight network check timeout: network/DNS/default-gateway not ready.');
-}
-
-async function preAuthRefresh(page, cfg, logger) {
-  if (cfg.preAuthRefresh === false) return;
-  const fakeIpMode = detectFakeIpModeNow();
-  const refreshUrlsRaw = Array.isArray(cfg.refreshUrls) && cfg.refreshUrls.length > 0
-    ? cfg.refreshUrls
-    : [
-        cfg.portalUrl || '',
-        'http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro',
-        'http://www.msftconnecttest.com/redirect'
-      ].filter(Boolean);
-  const refreshUrls = filterUrlsForPortalOnly(cfg, refreshUrlsRaw, fakeIpMode);
-  const finalRefreshUrls = refreshUrls.length > 0 ? refreshUrls : [cfg.portalUrl || 'http://202.201.252.10'];
-  const refreshCount = Math.max(1, Number(cfg.refreshCount || 2));
-  const refreshTimeoutMs = Number(cfg.refreshTimeoutMs || 8000);
-  const refreshDelayMs = Number(cfg.refreshDelayMs || 600);
-
-  logger.log(`Pre-auth refresh: fakeIpMode=${fakeIpMode}, count=${refreshCount}, urls=${finalRefreshUrls.length}`);
-  for (let i = 1; i <= refreshCount; i++) {
-    for (const rawUrl of finalRefreshUrls) {
-      const u = withCacheBust(rawUrl);
-      try {
-        await page.goto(u, { waitUntil: 'domcontentloaded', timeout: refreshTimeoutMs });
-        logger.log(`Refresh ok (${i}/${refreshCount}): ${rawUrl} -> ${sanitizeUrlForLog(page.url())}`);
-      } catch (err) {
-        logger.log(`Refresh fail (${i}/${refreshCount}): ${rawUrl} (${sanitizeMessage(err.message)})`);
-      }
-      await sleep(refreshDelayMs);
-    }
+  logger.log(
+    `Preflight HTTP Probe: fakeIpMode=${FAKE_IP_MODE} httpOk=${httpOk}`
+  );
+  if (!httpOk) {
+    logger.log('HTTP probe failed. Proceeding anyway, but login may fail.');
   }
 }
 
-async function resolvePortalUrl(page, cfg, logger) {
-  const fakeIpMode = detectFakeIpModeNow();
+
+
+async function resolvePortalUrl(cfg, logger) {
   const autoDiscover = cfg.autoDiscoverPortal !== false;
   const detectUrlsRaw = Array.isArray(cfg.detectUrls) && cfg.detectUrls.length > 0
     ? cfg.detectUrls
     : [cfg.detectUrl || 'http://www.msftconnecttest.com/redirect', 'http://connect.rom.miui.com/generate_204', 'http://neverssl.com/'];
-  const detectUrls = filterUrlsForPortalOnly(cfg, detectUrlsRaw, fakeIpMode);
-  const detectTimeoutMs = Number(cfg.detectTimeoutMs || 10000);
+  const detectUrls = filterUrlsForPortalOnly(cfg, detectUrlsRaw, FAKE_IP_MODE);
+  // Use configurable detect timeout (fallback 3000ms) instead of hardcoded 500ms.
+  const quickProbeMs = Math.max(800, Number(cfg.detectTimeoutMs || 3000));
 
   if (autoDiscover) {
     for (const detectUrl of detectUrls) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), quickProbeMs);
       try {
-        logger.log(`Auto discover portal via: ${detectUrl}`);
-        await page.goto(detectUrl, { waitUntil: 'domcontentloaded', timeout: detectTimeoutMs });
-        const discovered = page.url();
-        logger.log(`Detect result url: ${sanitizeUrlForLog(discovered)}`);
-        if (isPortalUrl(discovered)) return discovered;
-      } catch (err) {
-        logger.log(`Detect url failed: ${sanitizeMessage(err.message)}`);
+        logger.log(`Auto discover portal via: ${detectUrl} (${quickProbeMs}ms quick probe)`);
+        const res = await fetch(detectUrl, { method: 'GET', redirect: 'manual', signal: ctrl.signal });
+        // Check for 302/301/307 redirect
+        const location = res.headers.get('location') || '';
+        if (location && isPortalUrl(location)) {
+          logger.log(`Discovered portal URL (redirect): ${sanitizeUrlForLog(location)}`);
+          return location;
+        }
+        // DNS-hijacked gateways often return 200 with the portal page or a redirect page
+        if (res.status === 200 || res.status === 302 || res.status === 301) {
+          const body = await res.text();
+          // Match various portal URL patterns in the response body
+          const portalPatterns = [
+            /(?:href|src|url|location)\s*[=:]\s*["']?(https?:\/\/[^"'\s>]*srun_portal[^"'\s>]*)/i,
+            /(?:href|src|url|location)\s*[=:]\s*["']?(https?:\/\/gw\.[^"'\s>]+)/i,
+            /window\.location\s*=\s*["'](https?:\/\/[^"'\s>]+srun_portal[^"'\s>]*)/i,
+          ];
+          for (const pat of portalPatterns) {
+            const m = body.match(pat);
+            if (m && m[1]) {
+              const discovered = m[1].replace(/&amp;/g, '&');
+              logger.log(`Discovered portal URL (body match): ${sanitizeUrlForLog(discovered)}`);
+              return discovered;
+            }
+          }
+        }
+        logger.log(`Detect result: status=${res.status}, location=${location || 'none'}, no portal found.`);
+      } catch (_) {
+        // Timeout = gateway doesn't hijack this URL, skip to next or fallback
+        logger.log(`Auto discover: no gateway hijack within ${quickProbeMs}ms, skipping.`);
+      } finally {
+        clearTimeout(timer);
       }
     }
-    if (fakeIpMode && detectUrls.length === 0) {
-      logger.log('Auto discover skipped: fakeIpMode=true and no portal detect URLs.');
+    if (FAKE_IP_MODE && detectUrls.length === 0) {
+      logger.log('Auto discover skipped: FAKE_IP_MODE=true and no portal detect URLs.');
     }
   }
 
   if (cfg.portalUrl) {
-    logger.log(`Fallback portalUrl from config: ${cfg.portalUrl}`);
+    logger.log(`Using portalUrl from config: ${cfg.portalUrl}`);
     return cfg.portalUrl;
   }
 
   throw new Error('Cannot resolve portalUrl. Please set portalUrl in config.json.');
 }
 
-async function waitForLoginResult(page, timeoutMs) {
+async function waitForLoginByRadUserInfo(cfg, logger, timeoutMs) {
+  const pollInterval = 800;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const url = page.url();
-    if (/srun_portal_success/i.test(url)) return { ok: true, reason: `url=${url}` };
-
-    const pageText = await page.locator('body').innerText().catch(() => '');
-    if (textContainsAny(pageText, ['已用流量', 'IP 地址', '用户账号', '注销'])) {
-      return { ok: true, reason: 'success keywords found' };
+    const online = await checkOnlineByRadUserInfo(cfg, 3000, logger);
+    if (online) {
+      return { ok: true, reason: 'rad_user_info confirmed online' };
     }
-
-    if (textContainsAny(pageText, ['密码错误', '账号错误', '认证失败', '登录失败', '拒绝', '错误'])) {
-      return { ok: false, reason: 'error keywords found on page' };
-    }
-
-    await sleep(800);
+    await sleep(pollInterval);
   }
-
-  return { ok: false, reason: 'timeout waiting login result' };
+  return { ok: false, reason: 'rad_user_info timeout: still offline' };
 }
 
 async function launchBrowser(cfg, logger) {
@@ -636,6 +510,7 @@ async function tryLoginOnce(cfg, logger, attempt) {
   const attemptTag = `attempt-${attempt}-${nowFileSafe()}`;
   const saveArtifacts = cfg.saveArtifacts !== false;
   let loginApiSuccess = false;
+  let loginApiError = '';
 
   if (cfg.disableIpv6Auth !== false) {
     await page.route('**/*', (route) => {
@@ -661,6 +536,8 @@ async function tryLoginOnce(cfg, logger, attempt) {
           const status = getPortalResponseStatus(body);
           if (status.ok) {
             loginApiSuccess = true;
+          } else if (status.code && status.code !== 'ok') {
+            loginApiError = status.message || status.code;
           }
           if (cfg.logPortalResponseBody === true) {
             const clean = sanitizePortalBodyForLog(body).replace(/\s+/g, ' ').slice(0, 500);
@@ -668,25 +545,23 @@ async function tryLoginOnce(cfg, logger, attempt) {
           } else {
             logger.log(`srun_portal summary: ${summarizePortalResponse(body)}`);
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     }
   });
 
   try {
-    if (Number(cfg.startupDelayMs || 0) > 0) {
-      logger.log(`Startup delay: ${cfg.startupDelayMs} ms`);
-      await sleep(Number(cfg.startupDelayMs));
-    }
-    await preflightNetworkCheck(cfg, logger);
-    const alreadyOnlineByPortal = await checkAlreadyOnlineByPortal(page, cfg, logger);
-    if (alreadyOnlineByPortal) {
-      logger.log('Already online by portal status check, skip portal auth.');
+    // Check online status first (pure fetch, instant) — skip everything if already online
+    const alreadyOnline = await checkAlreadyOnlineByPortal(cfg, logger);
+    if (alreadyOnline) {
+      logger.log('Already online, skip portal auth.');
       return true;
     }
-    await preAuthRefresh(page, cfg, logger);
 
-    const targetPortalUrl = await resolvePortalUrl(page, cfg, logger);
+    // Only do preflight when we actually need to authenticate
+    await preflightNetworkCheck(cfg, logger);
+
+    const targetPortalUrl = await resolvePortalUrl(cfg, logger);
     if (page.url() !== targetPortalUrl) {
       await gotoWithRetry(
         page,
@@ -699,8 +574,8 @@ async function tryLoginOnce(cfg, logger, attempt) {
     }
     logger.log(`Open page: ${sanitizeUrlForLog(page.url())}`);
 
-    const alreadyOnline = page.getByRole('button', { name: /注销|下线/i }).first();
-    if ((await alreadyOnline.count()) > 0 && (await alreadyOnline.isVisible())) {
+    const pageAlreadyOnline = page.getByRole('button', { name: /注销|下线/i }).first();
+    if ((await pageAlreadyOnline.count()) > 0 && (await pageAlreadyOnline.isVisible())) {
       logger.log('Already online, skip login.');
       return true;
     }
@@ -730,7 +605,7 @@ async function tryLoginOnce(cfg, logger, attempt) {
     if ((await domainSelect.count()) > 0) {
       const domainValue = cfg.domainValue || resolveDomainValue(cfg.operator);
       if (domainValue) {
-        await domainSelect.selectOption(domainValue).catch(() => {});
+        await domainSelect.selectOption(domainValue).catch(() => { });
         logger.log(`Select domain: ${domainValue}`);
       }
     }
@@ -744,7 +619,7 @@ async function tryLoginOnce(cfg, logger, attempt) {
     await passwordLocator.fill(cfg.password);
 
     if (saveArtifacts) {
-      await page.screenshot({ path: path.join(cfg.logDir, `${attemptTag}-before-click.png`), fullPage: true }).catch(() => {});
+      await page.screenshot({ path: path.join(cfg.logDir, `${attemptTag}-before-click.png`), fullPage: true }).catch(() => { });
     }
 
     const loginBtn = await firstVisible(page, [
@@ -762,25 +637,40 @@ async function tryLoginOnce(cfg, logger, attempt) {
 
     logger.log('Click login button.');
     await loginBtn.click();
-    await page.waitForTimeout(Number(cfg.postClickDelayMs || 300));
+    // Wait for the srun_portal API response to arrive
+    await sleep(Number(cfg.postClickDelayMs || 300));
 
-    // Do not wait for "networkidle" here: portal pages keep polling, which can delay
-    // completion by full timeout even when auth is already done.
-    let result = await waitForLoginResult(page, Number(cfg.resultTimeoutMs || 10000));
-    if (!result.ok && loginApiSuccess) {
-      const onlineByApi = await checkOnlineByRadUserInfo(cfg, 2500, logger);
-      if (onlineByApi) {
-        result = { ok: true, reason: 'srun_portal api success + rad_user_info online' };
-      } else {
-        result = { ok: true, reason: 'srun_portal api success' };
+    // If the API listener already detected a definitive error, fail fast
+    if (loginApiError) {
+      logger.log(`Login API error detected: ${loginApiError}`);
+      const result = { ok: false, reason: `srun_portal error: ${loginApiError}` };
+      logger.log(
+        `Login result: ok=${result.ok}, reason=${result.reason}, currentUrl=${sanitizeUrlForLog(page.url())}`
+      );
+
+      if (saveArtifacts) {
+        await page.screenshot({ path: path.join(cfg.logDir, `${attemptTag}-failed.png`), fullPage: true }).catch(() => { });
       }
+      return false;
     }
+
+    // If API listener confirmed success, verify with rad_user_info
+    // Otherwise, poll rad_user_info as the sole authority
+    const pollTimeout = loginApiSuccess ? 3000 : Number(cfg.resultTimeoutMs || 10000);
+    const result = await waitForLoginByRadUserInfo(cfg, logger, pollTimeout);
+
+    // If rad_user_info didn't confirm but API said ok, still trust API
+    if (!result.ok && loginApiSuccess) {
+      result.ok = true;
+      result.reason = 'srun_portal api success (rad_user_info unconfirmed)';
+    }
+
     logger.log(
       `Login result: ok=${result.ok}, reason=${result.reason}, currentUrl=${sanitizeUrlForLog(page.url())}`
     );
 
     if (saveArtifacts && !result.ok) {
-      await page.screenshot({ path: path.join(cfg.logDir, `${attemptTag}-failed.png`), fullPage: true }).catch(() => {});
+      await page.screenshot({ path: path.join(cfg.logDir, `${attemptTag}-failed.png`), fullPage: true }).catch(() => { });
       const html = await page.content().catch(() => '');
       if (html) {
         fs.writeFileSync(path.join(cfg.logDir, `${attemptTag}-failed.html`), html, 'utf8');
@@ -799,16 +689,14 @@ async function tryLoginOnce(cfg, logger, attempt) {
 }
 
 async function checkOnlineOnly(cfg, logger) {
-  const browser = await launchBrowser(cfg, logger);
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  const page = await context.newPage();
+  // Pure fetch online check, removing Playwright browser instantiation.
   try {
-    const online = await checkAlreadyOnlineByPortal(page, cfg, logger);
+    const online = await checkAlreadyOnlineByPortal(cfg, logger);
     logger.log(`Check-online-only result: online=${online}`);
     return online;
-  } finally {
-    await context.close();
-    await browser.close();
+  } catch (err) {
+    logger.log(`Check-online-only Error: ${err.message}`);
+    return false;
   }
 }
 

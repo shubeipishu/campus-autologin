@@ -1,46 +1,17 @@
 {
-  "__comment_1": "必填核心参数：username、password、operator。username 填学号/工号；password 填认证密码（若配置了 passwordEnvVar 且对应环境变量有值，会覆盖这里的 password）；operator 仅支持 中国移动/中国电信/中国联通。若你手动填写 domainValue（如 @cmcc/@ctcc/@cucc），会优先使用 domainValue，不再依赖 operator 映射。",
-  "__comment_2": "开机场景建议保留 Wi-Fi 与 preflight 检查，避免网卡未就绪导致误判。",
-  "__comment_3": "本模板使用稳健加速默认值：减少外部探测与刷新轮数，优先保证成功同时压缩认证耗时。",
+  "__comment_1": "必填参数：username、password、operator。operator 仅支持 中国移动/中国电信/中国联通。若填写 domainValue（如 @cmcc）会优先使用它。",
+  "__comment_2": "detectUrls 用于自动发现 Portal 重定向链接（利用网关 HTTP 劫持），不同教室/办公室的 ac_id 可能不同，自动发现会获取正确参数。",
   "portalUrl": "http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro",
   "autoDiscoverPortal": true,
-  "detectUrl": "http://www.msftconnecttest.com/redirect",
   "detectUrls": [
     "http://www.msftconnecttest.com/redirect"
   ],
-  "enforceWifiSsidCheck": true,
+  "detectTimeoutMs": 3000,
   "wifiSsidPrefixes": [
     "xju_"
   ],
   "wifiWaitMaxSec": 120,
   "wifiWaitIntervalSec": 3,
-  "dhcpRefreshBeforeAuth": true,
-  "dhcpRefreshPauseSec": 2,
-  "preflightCheck": true,
-  "gatewayHost": "202.201.252.10",
-  "requireIpPrefix": "10.",
-  "requireGatewayPrefix": "10.",
-  "checkGatewayPing": true,
-  "gatewayPingTimeoutMs": 1500,
-  "preflightProbeUrls": [
-    "http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro",
-    "http://www.msftconnecttest.com/redirect"
-  ],
-  "preflightProbeTimeoutMs": 3000,
-  "preflightWaitMaxMs": 45000,
-  "preflightIntervalMs": 900,
-  "preAuthRefresh": true,
-  "refreshUrls": [
-    "http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro"
-  ],
-  "refreshCount": 1,
-  "refreshTimeoutMs": 3500,
-  "refreshDelayMs": 200,
-  "skipAlreadyOnlineCheck": false,
-  "statusUrl": "http://202.201.252.10/srun_portal_success?ac_id=4&theme=pro",
-  "onlineCheckTimeoutMs": 2800,
-  "detectTimeoutMs": 4000,
-  "startupDelayMs": 1000,
   "portalOpenRetries": 3,
   "passwordEnvVar": "CAMPUS_PASSWORD",
   "disableIpv6Auth": true,
