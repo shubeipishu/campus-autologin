@@ -76,7 +76,9 @@ function Get-MetricValue {
 
 function Get-PrimaryAccessInterface {
   param(
-    [string]$GatewayPrefix = ''
+    [string]$GatewayPrefix = '',
+    $Adapters = $null,
+    $IPs = $null
   )
   $routes = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
   Sort-Object `
@@ -84,25 +86,28 @@ function Get-PrimaryAccessInterface {
     RouteMetric, InterfaceMetric
   if (-not $routes) { return $null }
 
-  $ipConfs = Get-NetIPConfiguration -ErrorAction SilentlyContinue
+  # Use cached adapters/IPs if provided, otherwise query (fallback)
+  if (-not $Adapters) { $Adapters = Get-NetAdapter -ErrorAction SilentlyContinue }
+  if (-not $IPs) { $IPs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue }
+
   foreach ($r in $routes) {
     $gw = [string]$r.NextHop
     if ($GatewayPrefix -and -not $gw.StartsWith($GatewayPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
       continue
     }
-    $it = $ipConfs | Where-Object { $_.InterfaceIndex -eq $r.InterfaceIndex } | Select-Object -First 1
-    if (-not $it -or -not $it.NetAdapter) { continue }
-    if ($it.NetAdapter.Status -ne 'Up' -or $it.NetAdapter.HardwareInterface -ne $true) { continue }
+    $adapter = $Adapters | Where-Object { $_.InterfaceIndex -eq $r.InterfaceIndex } | Select-Object -First 1
+    if (-not $adapter) { continue }
+    if ($adapter.Status -ne 'Up' -or $adapter.HardwareInterface -ne $true) { continue }
 
-    $ips = @($it.IPv4Address | ForEach-Object { [string]$_.IPAddress }) | Where-Object { $_ }
+    $ips = @($IPs | Where-Object { $_.InterfaceIndex -eq $r.InterfaceIndex } | ForEach-Object { [string]$_.IPAddress }) | Where-Object { $_ }
     if ($ips.Count -eq 0) { continue }
 
     $rawMedium = ''
-    if ($it.NetAdapter.NdisPhysicalMedium -ne $null) {
-      $rawMedium = [string]$it.NetAdapter.NdisPhysicalMedium
+    if ($null -ne $adapter.NdisPhysicalMedium) {
+      $rawMedium = [string]$adapter.NdisPhysicalMedium
     }
-    elseif ($it.NetAdapter.MediaType) {
-      $rawMedium = [string]$it.NetAdapter.MediaType
+    elseif ($adapter.MediaType) {
+      $rawMedium = [string]$adapter.MediaType
     }
     $accessType = 'Unknown'
     if ($rawMedium -eq '9' -or $rawMedium -eq 'Native802_11' -or $rawMedium -match '802.?11') {
@@ -113,8 +118,8 @@ function Get-PrimaryAccessInterface {
     }
 
     return [PSCustomObject]@{
-      AdapterName     = [string]$it.InterfaceAlias
-      InterfaceIndex  = [int]$it.InterfaceIndex
+      AdapterName     = [string]$adapter.Name
+      InterfaceIndex  = [int]$r.InterfaceIndex
       AccessType      = $accessType
       Medium          = $rawMedium
       IPv4List        = $ips
@@ -211,7 +216,7 @@ Write-Info "Rules: WLAN -> SSID must match [$($prefixes -join ', ')]; Wired -> I
 
 while ((Get-Date) -lt $deadline) {
   $elapsedSec = [int]((Get-Date) - $start).TotalSeconds
-  $access = Get-PrimaryAccessInterface -GatewayPrefix $gwPrefix
+  $access = Get-PrimaryAccessInterface -GatewayPrefix $gwPrefix -Adapters $allAdapters -IPs $allIPs
   if ($access) {
     $accessMsg = "adapter='$($access.AdapterName)' type=$($access.AccessType) ip=[$(($access.IPv4List -join ', '))] gw=$($access.Gateway)"
 

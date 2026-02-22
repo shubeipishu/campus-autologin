@@ -22,7 +22,13 @@ function sleep(ms) {
 }
 
 function ts() {
-  return new Date().toISOString();
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  const offset = -d.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const oh = p2(Math.floor(Math.abs(offset) / 60));
+  const om = p2(Math.abs(offset) % 60);
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}${sign}${oh}:${om}`;
 }
 
 function hhmmss() {
