@@ -24,7 +24,7 @@
   "logPortalResponseBody": false,
   "headless": true,
   "saveArtifacts": true,
-  "logDir": "C:\\Users\\admin\\campus-autologin\\logs",
+  "logDir": "logs",
   "logMaxSizeMB": 5,
   "logMaxFiles": 30,
   "timeoutMs": 20000,
