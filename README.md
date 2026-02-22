@@ -65,6 +65,9 @@ powershell -ExecutionPolicy Bypass -File .\run-campus-login.ps1
 
 ### 4. 设置开机自启
 
+> **注意**：需要以**管理员身份**运行 PowerShell，否则计划任务创建可能失败。
+> 右键 PowerShell → 「以管理员身份运行」，然后执行：
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-task.ps1
 ```
