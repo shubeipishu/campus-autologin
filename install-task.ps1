@@ -5,7 +5,8 @@ $runName = 'CampusNetAutoLogin'
 
 $wscript = "$env:WINDIR\System32\wscript.exe"
 $hiddenLauncher = "$scriptDir\run-campus-login-hidden.vbs"
-$action = "`"$wscript`" `"$hiddenLauncher`""
+# schtasks /TR needs the entire command in one quoted string with escaped inner quotes
+$trValue = """$wscript"" ""$hiddenLauncher"""
 
 try {
   $null = & schtasks /Query /TN $taskName 2>$null
@@ -19,7 +20,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 try {
-  $null = & schtasks /Create /TN $taskName /SC ONLOGON /TR $action /RL LIMITED /F 2>$null
+  $null = & schtasks /Create /TN $taskName /SC ONLOGON /TR $trValue /RL LIMITED /F 2>$null
 }
 catch {}
 try {
@@ -47,9 +48,9 @@ try {
   if (-not (Test-Path $runKey)) {
     New-Item -Path $runKey -Force | Out-Null
   }
-  Set-ItemProperty -Path $runKey -Name $runName -Value $action
+  Set-ItemProperty -Path $runKey -Name $runName -Value $trValue
   Write-Host "Task Scheduler create failed, fallback to HKCU Run startup entry installed: $runName"
-  Write-Host "Startup command: $action"
+  Write-Host "Startup command: $trValue"
 }
 catch {
   Write-Host "Failed to install Task Scheduler entry and failed to write HKCU Run fallback."
