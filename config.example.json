@@ -1,12 +1,19 @@
 {
   "__comment_1": "必填参数：username、password、operator。operator 仅支持 中国移动/中国电信/中国联通。若填写 domainValue（如 @cmcc）会优先使用它。",
   "__comment_2": "detectUrls 用于自动发现 Portal 重定向链接（利用网关 HTTP 劫持），不同教室/办公室的 ac_id 可能不同，自动发现会获取正确参数。",
+  "__comment_3": "routeBypassStaticIps 可为域名配置静态 IPv4 列表，配置后将优先使用这些 IP 添加路由绕行，不再进行 DNS 解析。",
   "portalUrl": "http://202.201.252.10/srun_portal_pc?ac_id=4&theme=pro",
   "autoDiscoverPortal": true,
   "detectUrls": [
     "http://www.msftconnecttest.com/redirect"
   ],
-  "detectTimeoutMs": 3000,
+  "routeBypassStaticIps": {
+    "www.msftconnecttest.com": [
+      "23.214.95.200"
+    ]
+  },
+  "detectAttempts": 10,
+  "detectTimeoutMs": 1000,
   "wifiSsidPrefixes": [
     "xju_"
   ],
@@ -15,6 +22,14 @@
   "portalOpenRetries": 3,
   "passwordEnvVar": "CAMPUS_PASSWORD",
   "disableIpv6Auth": true,
+  "useRouteBypassDuringAuth": true,
+  "useTemporaryHostsDuringAuth": true,
+  "temporaryHostsMappings": {
+    "www.msftconnecttest.com": "23.214.95.200"
+  },
+  "writePowerShellLogsToNodeLog": true,
+  "verboseLogs": false,
+  "verboseNetworkLogs": false,
   "username": "你的学号或工号",
   "password": "",
   "operator": "中国移动",
@@ -33,3 +48,4 @@
   "maxRetries": 6,
   "retryDelayMs": 20000
 }
+

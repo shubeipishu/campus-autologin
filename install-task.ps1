@@ -20,7 +20,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 try {
-  $null = & schtasks /Create /TN $taskName /SC ONLOGON /TR $trValue /RL LIMITED /F 2>$null
+  $null = & schtasks /Create /TN $taskName /SC ONLOGON /TR $trValue /RL HIGHEST /F 2>$null
 }
 catch {}
 try {
